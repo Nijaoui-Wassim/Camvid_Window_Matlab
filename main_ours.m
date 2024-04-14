@@ -1,0 +1,303 @@
+% Downlaod Camvid dataset if it does not exist already
+imageURL = "http://web4.cs.ucl.ac.uk/staff/g.brostow/" + ...
+    "MotionSegRecData/files/701_StillsRaw_full.zip";
+labelURL = "http://web4.cs.ucl.ac.uk/staff/g.brostow/" + ...
+    "MotionSegRecData/data/LabeledApproved_full.zip";
+
+outputFolder = fullfile(pwd,"CamVid");
+
+
+% Load Camvid Dataset
+imgDir = fullfile(outputFolder,"images","701_StillsRaw_full");
+imds = imageDatastore(imgDir);
+
+% Parameters for sliding windows
+windowSize = [64 64];  % Define your window size
+stepSize = 48;         % Define your step size
+miniBatchSize = 4;
+
+% Process the training images and labels
+trainImages = [];
+trainLabels = [];
+
+
+% Displaying one sample image
+%I = readimage(imds,25);
+%I = histeq(I);
+%imshow(I)
+
+% Defining the classes we have 12 if we include the background
+classes = [
+    "Sky"
+    "Building"
+    "Pole"
+    "Road"
+    "Pavement"
+    "Tree"
+    "SignSymbol"
+    "Fence"
+    "Car"
+    "Pedestrian"
+    "Bicyclist"
+    ];
+
+labelIDs = camvidPixelLabelIDs();
+labelDir = fullfile(outputFolder,"labels");
+pxds = pixelLabelDatastore(labelDir,classes,labelIDs);
+
+
+C = readimage(pxds,25);
+cmap = camvidColorMap;
+B = labeloverlay(I,C,"ColorMap",cmap);
+%imshow(B)
+pixelLabelColorbar(cmap,classes);
+
+% resizing the data:
+imageFolder = fullfile(outputFolder,"imagesResized",filesep);
+imds = resizeCamVidImages(imds,imageFolder);
+
+labelFolder = fullfile(outputFolder,"labelsResized",filesep);
+pxds = resizeCamVidPixelLabels(pxds,labelFolder);
+
+% Prepare Training and Test Sets
+[imdsTrain,imdsTest,pxdsTrain,pxdsTest] = partitionCamVidData(imds ...
+    ,pxds);
+numTrainingImages = numel(imdsTrain.Files);
+numTestingImages = numel(imdsTest.Files); % we did a 60 40 split
+
+
+% Applying windowSize
+for i = 1:numel(imdsTrain.Files)
+    % Read image and corresponding label
+    img = readimage(imdsTrain, i);
+    lbl = readimage(pxdsTrain, i);
+
+    % Apply sliding window to images only
+    imgPatches = slidingWindow(img, windowSize, stepSize);
+    lblPatches = lbl;  
+
+    % Store patches
+    trainImages = cat(4, trainImages, imgPatches);
+    trainLabels = cat(4, trainLabels, lblPatches);
+end
+
+
+
+% Select an image to display patches
+exampleImageIndex = 25;  % Change based on your dataset size
+exampleImage = readimage(imdsTrain, exampleImageIndex);
+exampleLabel = readimage(pxdsTrain, exampleImageIndex);
+fullReconstructedImage = slidingWindow(exampleImage, windowSize, stepSize);
+
+
+
+% Assuming cmap is correctly defined as before for visualization
+cmap = camvidColorMap();
+coloredLabel = labeloverlay(exampleImage, exampleLabel, 'ColorMap', cmap);
+
+% Display original image, its patches, and the original label
+figure;
+subplot(1,3,1);
+imshow(exampleImage);
+title('Original Image');
+
+subplot(1,3,2);
+imshow(fullReconstructedImage);  % Display tiled image patches
+title('Image Patches');
+
+subplot(1,3,3);
+imshow(coloredLabel);  % Display the original label overlaid on the original image
+title('Original Label Overlay');
+
+
+
+
+% Defining the training model
+imageSize = [224 224];
+numClasses = numel(classes);
+%lgraph = fcnLayers(imageSize,numClasses);
+lgraph = fcn_custom(imageSize, numClasses, imageSize);
+
+
+% dataset stats:
+tbl = countEachLabel(pxds);
+
+% Balancing the class weights:
+imageFreq = tbl.PixelCount ./ tbl.ImagePixelCount;
+classWeights = median(imageFreq) ./ imageFreq;
+
+pxLayer = pixelClassificationLayer("Name","labels","Classes", ...
+    tbl.Name,"ClassWeights",classWeights);
+
+% replacing the classification/last layer
+lgraph = removeLayers(lgraph,"pixelLabels");
+lgraph = addLayers(lgraph, pxLayer);
+lgraph = connectLayers(lgraph,"softmax","labels");
+
+%inputLayer = imageInputLayer([windowSize 3], 'Name', 'newInputLayer', 'Normalization', 'none');
+
+%lgraph = addLayers(lgraph, pxLayer);
+
+% Target and output sizes
+%targetSize = [224, 224];
+%currentOutputSize = [224, 224]; 
+
+% Correctly calculate the necessary stride for each dimension
+% We find the smallest stride that will get us at least to the target size
+%upsampleFactor = floor(targetSize ./ currentOutputSize) + ...
+%                 (mod(targetSize, currentOutputSize) ~= 0);
+
+
+
+% Define upsampling layers
+%upsampleLayers = [
+%    transposedConv2dLayer(2, numClasses, 'Stride', 3, 'Cropping', 32, 'Name', 'upsample_1'),  
+%    transposedConv2dLayer(2, numClasses, 'Stride', 2, 'Cropping', 15, 'Name', 'upsample_2')  
+%];
+
+% Add upsampling layers
+%lgraph = addLayers(lgraph, upsampleLayers);
+
+% Connect layers correctly
+%lastLayerName = 'softmax';  
+%lgraph = connectLayers(lgraph, lastLayerName, 'upsample_1');
+%lgraph = connectLayers(lgraph, 'upsample_1', 'upsample_2');
+
+% Add final classification layer
+%outputLayer = pixelClassificationLayer('Name', 'output', 'Classes', tbl.Name, 'ClassWeights', classWeights);
+%lgraph = addLayers(lgraph, outputLayer);
+%lgraph = removeLayers(lgraph,"labels");
+%lgraph = connectLayers(lgraph, 'upsample_2', 'output');
+
+lgraph
+
+
+
+% Hyperparameters
+options = trainingOptions("adam", ...
+    "InitialLearnRate",1e-3, ...
+    "MaxEpochs",1, ...  
+    "MiniBatchSize",miniBatchSize, ...
+    "Shuffle","never", ...
+    "CheckpointPath", tempdir, ...
+    "VerboseFrequency",2);
+
+
+
+
+
+% trainImages and trainLabels have been filled with patches, now we
+% transform them into datastores
+%imageDs = imageDatastore(trainImages, 'LabelSource', 'none');
+%labelDs = pixelLabelDatastore(trainLabels, classes, labelIDs);
+
+
+% Create an instance of the custom datastore
+dsTrainPatched = InMemoryDatastore(trainImages, trainLabels, miniBatchSize);
+
+
+
+
+
+
+% Now you can use dsTrainPatched with trainNetwork
+doTraining = true;
+if doTraining    
+    [net, info] = trainNetwork(dsTrainPatched, lgraph, options);
+    save("FCN8sCamVidOriginal.mat", "net");
+end
+
+% Preforming some predictions
+type("fcn_predict.m")
+
+% Configuration for CPU
+cfg = coder.config('mex');  % Code configuration for MEX-file generation
+cfg.TargetLang = 'C++';
+cfg.DeepLearningConfig = coder.DeepLearningConfig('mkldnn');  % Use MKL-DNN for CPU
+
+% Correct code generation for the defined function
+codegen -config cfg fcn_predict -args {ones(224,224,3,"uint8")} -report
+
+
+exampleImageIndex = 25;  % Change based on your dataset size
+exampleImage = readimage(imdsTrain, exampleImageIndex);
+% Get patches for the image only
+im = slidingWindow(exampleImage, windowSize, stepSize);
+
+predict_scores = fcn_predict_mex(im);
+[~,argmax] = max(predict_scores,[],3);
+
+
+cmap = camvidColorMap();
+SegmentedImage = labeloverlay(im,argmax,"ColorMap",cmap);
+figure
+imshow(SegmentedImage);
+pixelLabelColorbar(cmap,classes);
+
+
+
+
+function fullImage = slidingWindow(data, windowSize, stepSize)
+    % This function creates patches from the data using a sliding window approach,
+    % stitches them side by side, and resizes the result to 224x224.
+    [height, width, channels] = size(data);
+    patches = [];
+
+    % Calculate how many patches will fit vertically and horizontally
+    numPatchesX = floor((width - windowSize(2)) / stepSize) + 1;
+    numPatchesY = floor((height - windowSize(1)) / stepSize) + 1;
+    
+    % Initialize an array to store all patches in a grid
+    fullImageHeight = numPatchesY * windowSize(1);
+    fullImageWidth = numPatchesX * windowSize(2);
+    fullImage = zeros(fullImageHeight, fullImageWidth, channels, 'like', data);
+    
+    idxY = 0;
+    for y = 1:stepSize:(height-windowSize(1)+1)
+        idxX = 0;
+        for x = 1:stepSize:(width-windowSize(2)+1)
+            % Extract patch
+            patch = data(y:y+windowSize(1)-1, x:x+windowSize(2)-1, :);
+            patches = cat(4, patches, patch);
+            
+            % Calculate the position to place this patch in the full image
+            posY = idxY * windowSize(1) + 1;
+            posX = idxX * windowSize(2) + 1;
+            
+            % Place patch in the corresponding position in the full image
+            fullImage(posY:posY+windowSize(1)-1, posX:posX+windowSize(2)-1, :) = patch;
+            
+            idxX = idxX + 1;
+        end
+        idxY = idxY + 1;
+    end
+    
+    % Resize the full image to [224, 224]
+    fullImage = imresize(fullImage, [224, 224]);
+end
+
+
+
+function data = augmentImageAndLabel(data, xTrans, yTrans)
+% Augment images and pixel label images using random reflection and
+% translation.
+
+for i = 1:size(data,1)
+    
+    tform = randomAffine2d(...
+        "XReflection",true,...
+        "XTranslation", xTrans, ...
+        "YTranslation", yTrans);
+    
+    % Center the view at the center of image in the output space while
+    % allowing translation to move the output image out of view.
+    rout = affineOutputView(size(data{i,1}), tform, "BoundsStyle", ...
+        "centerOutput");
+    
+    % Warp the image and pixel labels using the same transform.
+    data{i,1} = imwarp(data{i,1}, tform, "OutputView", rout);
+    data{i,2} = imwarp(data{i,2}, tform, "OutputView", rout);
+    
+end
+end
+
